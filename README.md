@@ -22,6 +22,7 @@ Requires macOS 15 or later.
 | Action | Shortcut |
 |---|---|
 | Open Harbor | ⌥⌘H |
+| Close a pending Stop question, then the panel | Esc |
 
 ## Install
 

@@ -6,7 +6,8 @@ import UserNotifications
 /// One borderless panel for the app's whole life; opening it is just `orderFront`.
 final class HarborPanel: NSPanel {
     override var canBecomeKey: Bool { true }
-    override func cancelOperation(_ sender: Any?) { orderOut(nil) }
+    var onCancel: () -> Void = {}
+    override func cancelOperation(_ sender: Any?) { onCancel() }
 }
 
 @main
@@ -79,6 +80,10 @@ final class HarborApp: NSObject, NSApplicationDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
+        panel.onCancel = { [weak self] in
+            guard let self, !self.model.escape() else { return }
+            self.hide()
+        }
         host = NSHostingView(rootView: HarborView(model: model, onHeight: { [weak self] h in self?.resize(to: h) }))
         host.sizingOptions = []
         panel.contentView = host
@@ -162,8 +167,7 @@ final class HarborApp: NSObject, NSApplicationDelegate {
         closing = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
         model.isOpen = false
-        model.confirming = nil
-        model.confirmAll = false
+        model.dismissPrompts()
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
     }
 }
@@ -182,6 +186,7 @@ extension HarborApp: UNUserNotificationCenterDelegate {
 
     private func notifyIfNeeded(_ conflicts: [Conflict]) {
         let now = Date()
+        noticeDebounce.prune(now: now.timeIntervalSince1970)
         guard model.notifyPortTaken, !checkingNotices, now >= retryNoticesAfter,
               conflicts.contains(where: { noticeDebounce.allows($0.port, now: now.timeIntervalSince1970) }) else { return }
         checkingNotices = true

@@ -9,6 +9,7 @@ struct PortRow: Hashable, Sendable, Identifiable {
     let exePath: String
     let cwd: String
     let args: String      // full command line
+    var argv: [String]? = nil   // the real arguments, when read from the process (a path may hold spaces)
     let started: Date?
     var container: Docker.Container? = nil
     var checkout: Checkout? = nil
@@ -17,6 +18,8 @@ struct PortRow: Hashable, Sendable, Identifiable {
 
     var url: URL { URL(string: "http://localhost:\(port)")! }
     /// Folder name of the project the process runs from ("" when it runs from /).
+    /// What the process is: "vite", "next dev", "python http.server".
+    var tool: String { Scanner.tool(name: name, args: args, argv: argv) }
     var project: String { cwd == "/" || cwd.isEmpty ? "" : (cwd as NSString).lastPathComponent }
 }
 
@@ -32,10 +35,11 @@ enum Scanner {
             let path = exePath(pid)
             guard !path.isEmpty else { continue }     // process went away
             let name = (path as NSString).lastPathComponent
-            let line = args(pid) ?? name
+            let list = argv(pid)
+            let line = list?.joined(separator: " ") ?? name
             let dir = cwd(pid), start = startTime(pid)
             for port in ports {
-                rows.append(PortRow(pid: pid, port: port, name: name, exePath: path, cwd: dir, args: line, started: start))
+                rows.append(PortRow(pid: pid, port: port, name: name, exePath: path, cwd: dir, args: line, argv: list, started: start))
             }
         }
         return rows
@@ -74,17 +78,21 @@ enum Scanner {
     }
 
     /// Full command line from KERN_PROCARGS2.
-    static func args(_ pid: Int32) -> String? {
+    static func argv(_ pid: Int32) -> [String]? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
         var buf = [UInt8](repeating: 0, count: size)
         guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return nil }
-        return parseProcArgs(Array(buf.prefix(size)))
+        return parseProcArgv(Array(buf.prefix(size)))
     }
 
+    static func args(_ pid: Int32) -> String? { argv(pid)?.joined(separator: " ") }
+
     /// KERN_PROCARGS2 layout: Int32 argc, exec path, NUL padding, then argc NUL-separated arguments.
-    static func parseProcArgs(_ b: [UInt8]) -> String? {
+    static func parseProcArgs(_ b: [UInt8]) -> String? { parseProcArgv(b)?.joined(separator: " ") }
+
+    static func parseProcArgv(_ b: [UInt8]) -> [String]? {
         guard b.count > 4 else { return nil }
         let argc = Int(b[0]) | Int(b[1]) << 8 | Int(b[2]) << 16 | Int(b[3]) << 24
         var i = 4
@@ -97,14 +105,16 @@ enum Scanner {
             out.append(String(decoding: b[i..<j], as: UTF8.self))
             i = j + 1
         }
-        return out.isEmpty ? nil : out.joined(separator: " ")
+        return out.isEmpty ? nil : out
     }
 
     /// "/opt/homebrew/bin/node /Users/me/app/node_modules/.bin/vite --port 3000" -> "node vite --port 3000".
     static func shortCommand(_ args: String, limit: Int = 70) -> String {
-        let short = args.split(separator: " ").map { tok -> String in
-            tok.hasPrefix("/") || tok.hasPrefix("./") ? ((tok as NSString).lastPathComponent) : String(tok)
-        }.joined(separator: " ")
+        shortCommand(argv: args.split(separator: " ").map(String.init), limit: limit)
+    }
+
+    static func shortCommand(argv: [String], limit: Int = 70) -> String {
+        let short = shortTokens(argv).joined(separator: " ")
         return short.count > limit ? String(short.prefix(limit - 1)) + "…" : short
     }
 
@@ -122,11 +132,16 @@ enum Scanner {
         return s / 86400 == 1 ? "1 day" : "\(s / 86400) days"
     }
 
+    /// Paths shrink to their last component; an argument that holds spaces stays one token.
+    static func shortTokens(_ argv: [String]) -> [String] {
+        argv.map { $0.hasPrefix("/") || $0.hasPrefix("./") ? ($0 as NSString).lastPathComponent : $0 }
+    }
+
     private static let runners: Set<String> = ["node", "bun", "deno", "tsx", "ts-node", "ruby", "php", "java", "npm", "pnpm", "yarn"]
 
     /// What the process is, for the row's second line: "vite", "next dev", "python http.server".
-    static func tool(name: String, args: String) -> String {
-        let toks = shortCommand(args, limit: 200).split(separator: " ").map(String.init)
+    static func tool(name: String, args: String, argv: [String]? = nil) -> String {
+        let toks = shortTokens(argv ?? args.split(separator: " ").map(String.init))
         let isPython = name.lowercased().hasPrefix("python")
         if isPython {
             if let m = toks.firstIndex(of: "-m"), m + 1 < toks.count { return "python " + toks[m + 1] }

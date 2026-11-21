@@ -127,6 +127,8 @@ final class HarborModel {
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var busy = false
     @ObservationIgnored private var lastTick = Date.distantPast
+    /// Owners that just stopped for good: a scan that began before the stop must not bring their row back.
+    @ObservationIgnored private var stopped: [String: Date] = [:]
     private let live: Bool
 
     init(live: Bool = true) {
@@ -140,6 +142,9 @@ final class HarborModel {
 
     /// QA only.
     func loadWatch(lastActive: [Int32: TimeInterval], conflicts: [Conflict]) { self.lastActive = lastActive; self.conflicts = conflicts }
+
+    /// Dev servers, not ports: one process on two ports is one server.
+    var serverCount: Int { Set(dev.map(\.ownerKey)).count }
 
     var devMemory: UInt64 { dev.reduce(0) { $0 + (stats[$1.pid]?.bytes ?? 0) } }
 
@@ -210,7 +215,8 @@ final class HarborModel {
     }
 
     private func apply(_ rows: [PortRow]) {
-        let kinds = rows.filter { showDocker || $0.container == nil }.map { ($0, Classifier.classify($0)) }
+        stopped = stopped.filter { Date().timeIntervalSince($0.value) < 4 }
+        let kinds = rows.filter { (showDocker || $0.container == nil) && stopped[$0.ownerKey] == nil }.map { ($0, Classifier.classify($0)) }
         let newDev = kinds.filter { $0.1 == .dev }.map(\.0).sorted { $0.port < $1.port }
         let newOther = kinds.filter { $0.1 == .other }.map(\.0).sorted { $0.name.lowercased() < $1.name.lowercased() }
         let ids = { (r: [PortRow]) in r.map(\.id) }
@@ -227,7 +233,7 @@ final class HarborModel {
            !dev.contains(where: { $0.id == confirming && ports(of: $0).count > 1 }) { self.confirming = nil }
         if dev.isEmpty { confirmAll = false }
         if idleRows.isEmpty { confirmIdle = false }
-        onCount(dev.count)
+        onCount(serverCount)
     }
 
     // MARK: actions (each one runs only from a click)
@@ -256,7 +262,7 @@ final class HarborModel {
     func stopPrompt(_ row: PortRow) -> String? {
         let ports = ports(of: row).map(String.init)
         guard ports.count > 1 else { return nil }
-        let tool = Scanner.tool(name: row.name, args: row.args)
+        let tool = row.tool
         return "Stop \(tool)? It serves \(ports.formatted(.list(type: .and).locale(Locale(identifier: "en_US"))))."
     }
 
@@ -273,6 +279,18 @@ final class HarborModel {
         if isOther { showOther = true }
         requestStop(row, isOther: isOther)
     }
+
+    /// Drops every pending question ("Stop all?", the row prompt). The panel does this on every close.
+    func dismissPrompts() { confirming = nil; confirmAll = false; confirmIdle = false }
+
+    /// Escape: closes an open question first and says so; false means nothing was open, so the panel closes.
+    func escape() -> Bool {
+        guard confirming != nil || confirmAll || confirmIdle else { return false }
+        withAnimation(KitMotion.list) { dismissPrompts() }
+        return true
+    }
+
+    var stoppingCount: Int { Set(states.compactMap { if case .stopping = $0.value { $0.key } else { nil } }).count }
 
     func stop(_ row: PortRow, sound: Bool = true) {
         confirming = nil
@@ -300,7 +318,7 @@ final class HarborModel {
         guard Stopper.forceKill(row) else { states[row.ownerKey] = nil; refresh(); return }
         Task {
             try? await Task.sleep(for: .milliseconds(300))
-            withAnimation(KitMotion.list) { removeRows(of: row.ownerKey) }
+            withAnimation(KitMotion.list) { removeRows(of: row.ownerKey, confirmedGone: !Scanner.isAlive(row.pid)) }
             refresh()
         }
     }
@@ -323,11 +341,12 @@ final class HarborModel {
         requestStop(row, isOther: false)
     }
 
-    private func removeRows(of owner: String) {
+    func removeRows(of owner: String, confirmedGone: Bool = true) {
+        if confirmedGone { stopped[owner] = Date() }
         dev.removeAll { $0.ownerKey == owner }
         other.removeAll { $0.ownerKey == owner }
         states[owner] = nil
-        onCount(dev.count)
+        onCount(serverCount)
     }
 
     func setLaunchAtLogin(_ on: Bool) {

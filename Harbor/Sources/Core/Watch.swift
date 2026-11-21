@@ -24,7 +24,7 @@ struct PortNotice {
 
     init(_ conflict: Conflict) {
         let row = conflict.holder
-        let tool = Scanner.tool(name: row.name, args: row.args)
+        let tool = row.tool
         title = "Port \(conflict.port) is taken by \(tool)" + (row.project.isEmpty ? "" : " (\(row.project))")
         holderKey = Self.key(for: row)
     }
@@ -42,6 +42,9 @@ struct PortNoticeDebounce {
     func allows(_ port: Int, now: TimeInterval) -> Bool {
         lastSent[String(port)].map { now - $0 >= 600 } ?? true
     }
+
+    /// Drops entries past the cooldown; the app calls this before every check, so a saved file never grows.
+    mutating func prune(now: TimeInterval) { lastSent = lastSent.filter { now - $0.value < 600 } }
 
     mutating func record(_ port: Int, now: TimeInterval) {
         lastSent = lastSent.filter { now - $0.value < 600 }

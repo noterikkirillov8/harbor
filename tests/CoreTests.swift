@@ -63,6 +63,53 @@ struct CoreTests {
         check(model.confirming == nil && model.alsoPorts(first) == nil, "model: a closed port clears its confirmation and sibling hint")
     }
 
+    @MainActor static func countChecks() {
+        func listener(_ pid: Int32, _ port: Int) -> PortRow {
+            PortRow(pid: pid, port: port, name: "node", exePath: "/bin/node", cwd: "/", args: "node /x/.bin/vite", started: nil)
+        }
+        let model = HarborModel(live: false)
+        model.load([listener(61, 3000), listener(61, 3001), listener(62, 3002)])
+        check(model.dev.count == 3 && model.serverCount == 2, "count: one server on two ports is one running")
+    }
+
+    static func debounceChecks() {
+        var d = PortNoticeDebounce(lastSent: ["3000": 10, "3001": 500, "3002": 900])
+        d.prune(now: 700)
+        check(d.lastSent.keys.sorted() == ["3001", "3002"], "port notice: old entries are dropped on read, not only on write")
+    }
+
+    static func argvChecks() {
+        var raw: [UInt8] = [3, 0, 0, 0]
+        for part in ["/opt/homebrew/bin/node", "", "/opt/homebrew/bin/node", "/Users/e/My App/node_modules/.bin/vite", "--port"] { raw += Array(part.utf8) + [0] }
+        let argv = Scanner.parseProcArgv(raw)
+        check(argv == ["/opt/homebrew/bin/node", "/Users/e/My App/node_modules/.bin/vite", "--port"], "argv: arguments keep their spaces")
+        check(Scanner.shortCommand(argv: argv!) == "node vite --port" && Scanner.tool(name: "node", args: argv!.joined(separator: " "), argv: argv) == "vite", "argv: a path with spaces shortens to its last component")
+        check(Scanner.tool(name: "node", args: "node /Users/e/My App/node_modules/.bin/vite") != "vite", "argv: the plain string cannot do this, so the real argv is used")
+    }
+
+    @MainActor static func promptChecks() {
+        func listener(_ pid: Int32, _ port: Int) -> PortRow {
+            PortRow(pid: pid, port: port, name: "node", exePath: "/bin/node", cwd: "/", args: "node /x/.bin/vite", started: nil)
+        }
+        let a = listener(51, 3000), b = listener(52, 3001), c = listener(52, 3002)
+        let model = HarborModel(live: false)
+        model.load([a, b, c])
+        check(!model.escape(), "escape: nothing open means the panel closes")
+        model.confirmAll = true
+        check(model.escape() && !model.confirmAll && !model.escape(), "escape: first press closes Stop all, second closes the panel")
+        model.confirmIdle = true; model.confirming = a.id
+        model.dismissPrompts()
+        check(!model.confirmIdle && model.confirming == nil && !model.confirmAll, "close: every pending question is dropped, idle one too")
+        model.removeRows(of: b.ownerKey)
+        model.load([a, b, c])
+        check(model.dev == [a], "stop: a scan that began before the stop cannot bring the row back")
+        model.removeRows(of: a.ownerKey, confirmedGone: false)
+        model.load([a])
+        check(model.dev == [a], "stop: a force quit that did not kill leaves the row")
+        model.states = [a.ownerKey: .stopping(since: Date()), b.ownerKey: .stopping(since: Date()), "x": .stuck]
+        check(model.stoppingCount == 2, "header: counts servers being stopped")
+    }
+
     static func portNoticeChecks() {
         func holder(_ cwd: String, started: Double = 10) -> PortRow {
             PortRow(pid: 41, port: 3000, name: "node", exePath: "/bin/node", cwd: cwd,
@@ -132,6 +179,10 @@ struct CoreTests {
         portNoticeChecks()
         if ProcessInfo.processInfo.environment["HARBOR_TEST_PORT_NOTICES_ONLY"] == "1" { exit(failures == 0 ? 0 : 1) }
         sharedPortChecks()
+        promptChecks()
+        countChecks()
+        argvChecks()
+        debounceChecks()
         if ProcessInfo.processInfo.environment["HARBOR_TEST_SHARED_PORTS_ONLY"] == "1" { exit(failures == 0 ? 0 : 1) }
         databaseAddressChecks()
         if ProcessInfo.processInfo.environment["HARBOR_TEST_DATABASE_ONLY"] == "1" { exit(failures == 0 ? 0 : 1) }

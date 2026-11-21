@@ -64,8 +64,12 @@ struct HarborView: View {
         HStack(spacing: KitSpace.m) {
             HStack(spacing: 6) {
                 KitLed(on: !model.dev.isEmpty)
-                Text("\(model.counted ? model.dev.count : 0) running").font(KitFont.key).foregroundStyle(KitColor.text2).monospacedDigit()
-                    .kitRollingNumber(model.counted ? model.dev.count : 0)
+                if model.stoppingCount > 0 {
+                    Text("Stopping \(model.stoppingCount)").font(KitFont.key).foregroundStyle(KitColor.red).monospacedDigit()
+                } else {
+                    Text("\(model.counted ? model.serverCount : 0) running").font(KitFont.key).foregroundStyle(KitColor.text2).monospacedDigit()
+                        .kitRollingNumber(model.counted ? model.serverCount : 0)
+                }
             }
             if model.dev.contains(where: { $0.container == nil }) {
                 Text(Fmt.memory(model.counted ? model.devMemory : 0))
@@ -84,7 +88,7 @@ struct HarborView: View {
             let showOthers = model.showOther && !model.other.isEmpty
             VStack(spacing: 0) {
                 if let c = model.banner { PortBanner(model: model, conflict: c).transition(.kitBar) }
-                if model.dev.isEmpty { EmptyBoard().frame(height: Layout.emptyBoard) }
+                if model.dev.isEmpty { EmptyBoard(others: model.other.count).frame(height: Layout.emptyBoard) }
                 let rows = model.dev.count + (showOthers ? model.other.count : 0)
                 let height = CGFloat(rows) * Layout.rowHeight + (showOthers ? Layout.sectionLabel : 0)
                 if rows > 0 {
@@ -130,15 +134,16 @@ struct HarborView: View {
         if model.confirmAll || model.confirmIdle {
             let idle = model.confirmIdle
             let rows = idle ? model.idleRows : model.dev
+            let servers = Set(rows.map(\.ownerKey)).count
             VStack(alignment: .leading, spacing: KitSpace.m) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Stop \(rows.count) \(idle ? "idle " : "")dev server\(rows.count == 1 ? "" : "s")?")
+                    Text("Stop \(servers) \(idle ? "idle " : "")dev server\(servers == 1 ? "" : "s")?")
                         .font(KitFont.bodyMedium).foregroundStyle(KitColor.text)
                     Text(rows.prefix(8).map { String($0.port) }.joined(separator: ", ") + (rows.count > 8 ? ", and \(rows.count - 8) more" : ""))
                         .font(.system(size: 11).monospacedDigit()).foregroundStyle(KitColor.text2).lineLimit(1)
                 }
                 HStack(spacing: KitSpace.s) {
-                    Button("Stop \(rows.count)") { idle ? model.stopIdle() : model.stopAllDev() }.buttonStyle(.kitDestructive)
+                    Button("Stop \(servers)") { idle ? model.stopIdle() : model.stopAllDev() }.buttonStyle(.kitDestructive)
                     Button("Cancel") { withAnimation(KitMotion.list) { model.confirmAll = false; model.confirmIdle = false } }.buttonStyle(.kitSecondary)
                     Spacer()
                 }
@@ -152,7 +157,7 @@ struct HarborView: View {
                 }
                 Spacer()
                 if !model.idleRows.isEmpty {
-                    Button("Stop idle (\(model.idleRows.count))") { withAnimation(KitMotion.list) { model.confirmIdle = true } }
+                    Button("Stop idle (\(Set(model.idleRows.map(\.ownerKey)).count))") { withAnimation(KitMotion.list) { model.confirmIdle = true } }
                         .buttonStyle(.kitSecondary)
                 }
                 Button("Stop all") { withAnimation(KitMotion.list) { model.confirmAll = true } }
@@ -306,7 +311,7 @@ struct RowView: View {
         } else if let container = row.container {
             Text(container.image).font(KitFont.detail).foregroundStyle(KitColor.text2).lineLimit(1)
         } else {
-            UptimeLabel(row: row, name: isOther ? "app" : Scanner.tool(name: row.name, args: row.args),
+            UptimeLabel(row: row, name: isOther ? "app" : row.tool,
                         idleSince: isIdle ? model.lastActive[row.pid] : nil)
         }
     }
@@ -531,11 +536,12 @@ struct MoreMenu: View {
 
 /// Nothing running: a big zero on the board.
 struct EmptyBoard: View {
+    var others = 0
     var body: some View {
         VStack(spacing: 6) {
             Text("0").font(KitFont.figure(56, .semibold)).foregroundStyle(KitColor.text3)
             Text("No dev servers running").font(KitFont.bodyMedium).foregroundStyle(KitColor.text)
-            Text("Start one and it shows up here.").font(KitFont.detail).foregroundStyle(KitColor.text2)
+            Text(others == 0 ? "Start one and it shows up here." : "\(others) other app\(others == 1 ? " uses" : "s use") ports. See Other apps below.").font(KitFont.detail).foregroundStyle(KitColor.text2)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 32)
